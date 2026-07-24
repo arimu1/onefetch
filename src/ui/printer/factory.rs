@@ -1,5 +1,5 @@
 use super::Printer;
-use crate::cli::CliOptions;
+use crate::cli::{CliOptions, ColorMode, resolve_color_mode};
 use crate::info::Info;
 use crate::info::langs::language::Language;
 use crate::ui::printer::{PrinterType, SerializationFormat};
@@ -17,6 +17,7 @@ pub struct PrinterFactory {
     color_resolution: usize,
     ascii_input: Option<String>,
     ascii_language: Option<Language>,
+    color_enabled: bool,
 }
 
 impl PrinterFactory {
@@ -40,6 +41,8 @@ impl PrinterFactory {
             None
         };
 
+        let color_mode = resolve_color_mode(&cli_options.visuals, &cli_options.ascii);
+
         Ok(Self {
             output: cli_options.developer.output,
             info,
@@ -50,6 +53,7 @@ impl PrinterFactory {
             color_resolution: cli_options.image.color_resolution,
             ascii_input: cli_options.ascii.ascii_input,
             ascii_language: cli_options.ascii.ascii_language,
+            color_enabled: !matches!(color_mode, ColorMode::Never),
         })
     }
 
@@ -64,22 +68,26 @@ impl PrinterFactory {
             color_resolution,
             ascii_input,
             ascii_language,
+            color_enabled,
         } = self;
 
         match output {
             Some(SerializationFormat::Json) => Ok(Printer {
                 r#type: PrinterType::Json,
                 info,
+                color_enabled,
             }),
             Some(SerializationFormat::Yaml) => Ok(Printer {
                 r#type: PrinterType::Yaml,
                 info,
+                color_enabled,
             }),
             None => {
                 if art_off {
                     Ok(Printer {
                         r#type: PrinterType::Plain,
                         info,
+                        color_enabled,
                     })
                 } else if let Some(image) = image {
                     Ok(Printer {
@@ -89,6 +97,7 @@ impl PrinterFactory {
                             resolution: color_resolution,
                         },
                         info,
+                        color_enabled,
                     })
                 } else {
                     let ascii_art = ascii_input
@@ -105,11 +114,13 @@ impl PrinterFactory {
                         Ok(Printer {
                             r#type: PrinterType::Ascii { art, no_bold },
                             info,
+                            color_enabled,
                         })
                     } else {
                         Ok(Printer {
                             r#type: PrinterType::Plain,
                             info,
+                            color_enabled,
                         })
                     }
                 }
@@ -228,10 +239,33 @@ mod tests {
             color_resolution: 8,
             ascii_input: None,
             ascii_language: None,
+            color_enabled: true,
         };
 
         let printer = factory.create().unwrap();
 
         assert!(matches!(printer.r#type, PrinterType::Image { .. }));
+    }
+
+    // https://github.com/o2sh/onefetch/issues/1490
+    #[test]
+    fn test_color_enabled_by_default() {
+        let info = Info::default();
+        let options = CliOptions::default();
+
+        let factory = PrinterFactory::new(info, options).unwrap();
+
+        assert!(factory.color_enabled);
+    }
+
+    #[test]
+    fn test_color_disabled_with_color_never() {
+        let info = Info::default();
+        let mut options = CliOptions::default();
+        options.visuals.color = crate::cli::ColorMode::Never;
+
+        let factory = PrinterFactory::new(info, options).unwrap();
+
+        assert!(!factory.color_enabled);
     }
 }

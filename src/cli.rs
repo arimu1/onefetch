@@ -120,7 +120,7 @@ pub struct InfoCliOptions {
     pub r#type: Vec<LanguageType>,
 }
 
-#[derive(Clone, Debug, Args, PartialEq, Eq)]
+#[derive(Clone, Debug, Args, PartialEq, Eq, Default)]
 #[command(next_help_heading = "ASCII")]
 pub struct AsciiCliOptions {
     /// Takes a non-empty STRING as input to replace the ASCII logo
@@ -150,11 +150,11 @@ pub struct AsciiCliOptions {
         hide_possible_values = true
     )]
     pub ascii_language: Option<Language>,
-    /// Specify when to use true color
+    /// (deprecated) Specify when to use true color, use `--color` instead
     ///
     /// If set to auto: true color will be enabled if supported by the terminal
-    #[arg(long, default_value = "auto", value_name = "WHEN", value_enum)]
-    pub true_color: When,
+    #[arg(long, value_name = "WHEN", value_enum)]
+    pub true_color: Option<When>,
 }
 
 #[derive(Clone, Debug, Args, PartialEq, Eq)]
@@ -209,6 +209,17 @@ pub struct TextForamttingCliOptions {
 #[derive(Clone, Debug, Args, PartialEq, Eq, Default)]
 #[command(next_help_heading = "VISUALS")]
 pub struct VisualsCliOptions {
+    /// Specify when to use color in the output
+    ///
+    /// - auto: color is enabled if supported by the terminal (true color when available)
+    ///
+    /// - always: force true (24-bit) color
+    ///
+    /// - ansi: restrict output to the 16 basic ANSI colors
+    ///
+    /// - never: disable all color (and bold) formatting, useful when parsing the output
+    #[arg(long, default_value = "auto", value_name = "WHEN", value_enum)]
+    pub color: ColorMode,
     /// Hides the color palette
     #[arg(long)]
     pub no_color_palette: bool,
@@ -291,16 +302,6 @@ impl Default for TextForamttingCliOptions {
     }
 }
 
-impl Default for AsciiCliOptions {
-    fn default() -> Self {
-        AsciiCliOptions {
-            ascii_input: Option::default(),
-            ascii_colors: Vec::default(),
-            ascii_language: Option::default(),
-            true_color: When::Auto,
-        }
-    }
-}
 impl Default for ImageCliOptions {
     fn default() -> Self {
         ImageCliOptions {
@@ -356,6 +357,32 @@ pub enum When {
     Auto,
     Never,
     Always,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ColorMode {
+    /// Color enabled if supported by the terminal (true color when available)
+    #[default]
+    Auto,
+    /// Force true (24-bit) color
+    Always,
+    /// Restrict output to the 16 basic ANSI colors
+    Ansi,
+    /// Disable all color (and bold) formatting
+    Never,
+}
+
+/// Resolves the effective [`ColorMode`], honoring the deprecated `--true-color`
+/// flag as an alias for `--color` when it was explicitly provided.
+pub fn resolve_color_mode(visuals: &VisualsCliOptions, ascii: &AsciiCliOptions) -> ColorMode {
+    match ascii.true_color {
+        Some(When::Always) => ColorMode::Always,
+        // `--true-color never` never disabled color entirely, it only forced the
+        // basic 16-color ANSI palette instead of true color.
+        Some(When::Never) => ColorMode::Ansi,
+        Some(When::Auto) => ColorMode::Auto,
+        None => visuals.color,
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, PartialEq, Eq, Debug, Serialize, Copy)]
@@ -456,6 +483,42 @@ mod test {
     #[test]
     fn test_config_with_text_colors_but_out_of_bounds() {
         assert!(CliOptions::try_parse_from(["onefetch", "--text-colors", "17"]).is_err())
+    }
+
+    #[test]
+    fn test_config_with_color_flag() {
+        let config = CliOptions::parse_from(["onefetch", "--color", "never"]);
+        assert_eq!(config.visuals.color, ColorMode::Never);
+    }
+
+    #[test]
+    fn test_config_with_invalid_color_flag() {
+        assert!(CliOptions::try_parse_from(["onefetch", "--color", "true"]).is_err())
+    }
+
+    // https://github.com/o2sh/onefetch/issues/1490
+    #[rstest::rstest]
+    #[case(None, ColorMode::Auto, ColorMode::Auto)]
+    #[case(None, ColorMode::Never, ColorMode::Never)]
+    #[case(Some(When::Always), ColorMode::Never, ColorMode::Always)]
+    #[case(Some(When::Auto), ColorMode::Never, ColorMode::Auto)]
+    // The deprecated `--true-color never` only ever forced the 16-color ANSI
+    // palette, it never disabled color output entirely.
+    #[case(Some(When::Never), ColorMode::Never, ColorMode::Ansi)]
+    fn test_resolve_color_mode(
+        #[case] true_color: Option<When>,
+        #[case] color: ColorMode,
+        #[case] expected: ColorMode,
+    ) {
+        let visuals = VisualsCliOptions {
+            color,
+            ..Default::default()
+        };
+        let ascii = AsciiCliOptions {
+            true_color,
+            ..Default::default()
+        };
+        assert_eq!(resolve_color_mode(&visuals, &ascii), expected);
     }
 }
 

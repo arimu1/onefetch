@@ -21,7 +21,9 @@ use self::url::UrlInfo;
 use self::url::get_repo_url;
 use self::utils::info_field::{InfoField, InfoType};
 use self::version::VersionInfo;
-use crate::cli::{CliOptions, NumberSeparator, When, is_truecolor_terminal};
+use crate::cli::{
+    CliOptions, ColorMode, NumberSeparator, is_truecolor_terminal, resolve_color_mode,
+};
 use crate::ui::get_ascii_colors;
 use crate::ui::text_colors::TextColors;
 use anyhow::{Context, Result};
@@ -140,10 +142,14 @@ pub fn build_info(cli_options: &CliOptions) -> Result<Info> {
         cli_options.info.http_url,
     )
     .context("Failed to determine repository URL")?;
-    let true_color = match cli_options.ascii.true_color {
-        When::Always => true,
-        When::Never => false,
-        When::Auto => is_truecolor_terminal(),
+    let color_mode = resolve_color_mode(&cli_options.visuals, &cli_options.ascii);
+    if cli_options.ascii.true_color.is_some() {
+        eprintln!("warning: `--true-color` is deprecated, use `--color` instead");
+    }
+    let true_color = match color_mode {
+        ColorMode::Always => true,
+        ColorMode::Ansi | ColorMode::Never => false,
+        ColorMode::Auto => is_truecolor_terminal(),
     };
     let loc_by_language = loc_by_language_sorted_handle
         .join()
@@ -442,13 +448,17 @@ impl InfoBuilder {
         dominant_language: Option<Language>,
         ascii_colors: Vec<DynColors>,
     ) -> Info {
+        let color_mode = resolve_color_mode(&cli_options.visuals, &cli_options.ascii);
         Info {
             title: self.title,
             info_fields: self.info_fields,
             text_colors,
             dominant_language,
             ascii_colors,
-            no_color_palette: cli_options.visuals.no_color_palette,
+            // The color palette is only made of colors, so there's nothing
+            // useful left to show once color output is disabled.
+            no_color_palette: cli_options.visuals.no_color_palette
+                || matches!(color_mode, ColorMode::Never),
             no_bold: cli_options.text_formatting.no_bold,
         }
     }

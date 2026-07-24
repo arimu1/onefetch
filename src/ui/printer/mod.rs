@@ -3,7 +3,9 @@ use ::image::DynamicImage;
 use anyhow::{Context, Result};
 use onefetch_ascii::AsciiArt;
 use onefetch_image::ImageBackend;
+use regex::Regex;
 use std::fmt::Write as _;
+use std::sync::LazyLock;
 
 pub mod factory;
 
@@ -18,6 +20,9 @@ pub enum SerializationFormat {
 pub struct Printer {
     info: Info,
     r#type: PrinterType,
+    /// Whether color (and other terminal-only escape codes) may be written to the
+    /// output. Set to `false` by `--color never`.
+    color_enabled: bool,
 }
 
 enum PrinterType {
@@ -47,7 +52,7 @@ impl Printer {
                 Ok(())
             }
             PrinterType::Plain => {
-                write_with_line_wrapping(writer, &self.info.to_string())?;
+                write_with_line_wrapping(writer, &self.info.to_string(), self.color_enabled)?;
                 Ok(())
             }
             PrinterType::Image {
@@ -66,7 +71,7 @@ impl Printer {
                     .add_image(info_lines, image, *resolution)
                     .context("Failed to render image")?;
 
-                write_with_line_wrapping(writer, &rendered)?;
+                write_with_line_wrapping(writer, &rendered, self.color_enabled)?;
                 Ok(())
             }
             PrinterType::Ascii { art, no_bold } => {
@@ -90,16 +95,32 @@ impl Printer {
                     }
                 }
 
-                write_with_line_wrapping(writer, &buf)?;
+                write_with_line_wrapping(writer, &buf, self.color_enabled)?;
                 Ok(())
             }
         }
     }
 }
 
-fn write_with_line_wrapping(writer: &mut dyn std::io::Write, content: &str) -> Result<()> {
-    // \x1B[?7l turns off line wrapping and \x1B[?7h turns it on
-    write!(writer, "\x1B[?7l{content}\x1B[?7h")?;
+static ANSI_ESCAPE_CODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1B\[[0-9;]*m").expect("valid regex"));
+
+/// Removes ANSI SGR (color/bold/etc.) escape codes from `content`.
+fn strip_ansi_codes(content: &str) -> String {
+    ANSI_ESCAPE_CODE_RE.replace_all(content, "").into_owned()
+}
+
+fn write_with_line_wrapping(
+    writer: &mut dyn std::io::Write,
+    content: &str,
+    color_enabled: bool,
+) -> Result<()> {
+    if color_enabled {
+        // \x1B[?7l turns off line wrapping and \x1B[?7h turns it on
+        write!(writer, "\x1B[?7l{content}\x1B[?7h")?;
+    } else {
+        write!(writer, "{}", strip_ansi_codes(content))?;
+    }
     Ok(())
 }
 
@@ -126,5 +147,38 @@ impl std::fmt::Debug for PrinterType {
             PrinterType::Image { .. } => "Image",
         };
         write!(f, "PrinterType::{name}")
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_strip_ansi_codes() {
+        let colored = "\x1B[31;1mCommits\x1B[0m\x1B[39;1m:\x1B[0m \x1B[39m411\x1B[0m";
+        assert_eq!(strip_ansi_codes(colored), "Commits: 411");
+    }
+
+    #[test]
+    fn test_strip_ansi_codes_without_any_codes() {
+        assert_eq!(strip_ansi_codes("Commits: 411"), "Commits: 411");
+    }
+
+    #[test]
+    fn test_write_with_line_wrapping_color_disabled_strips_codes() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_with_line_wrapping(&mut buf, "\x1B[31mred\x1B[0m", false).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "red");
+    }
+
+    #[test]
+    fn test_write_with_line_wrapping_color_enabled_keeps_codes() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_with_line_wrapping(&mut buf, "\x1B[31mred\x1B[0m", true).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "\x1B[?7l\x1B[31mred\x1B[0m\x1B[?7h"
+        );
     }
 }
